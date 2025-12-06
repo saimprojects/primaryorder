@@ -1,1 +1,1 @@
-web: cd backend && gunicorn ecom_project.wsgi --log-file -
+web: gunicorn backend.ecom_project.wsgi:application --log-file -
