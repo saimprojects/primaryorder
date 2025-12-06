@@ -19,7 +19,6 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-3p#z5lt5rdtllp#fw7my-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -195,3 +194,19 @@ JAZZMIN_SETTINGS = {
 
 
 
+
+
+ALLOWED_HOSTS = [
+    'primaryorder.up.railway.app',
+    'localhost',
+    '127.0.0.1',
+    '*.up.railway.app'   # extra safety
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://primaryorder.up.railway.app',
+    'https://*.up.railway.app'
+]
+
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
