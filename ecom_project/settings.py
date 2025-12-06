@@ -171,9 +171,14 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
-# CORS
-CORS_ALLOW_ALL_ORIGINS = True  # For development
+# CORS  # For development
+CORS_ALLOW_CREDENTIALS = True   # ← Yeh zaroori hai withCredentials ke liye
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://www.primaryorder.com/",
+    "https://primaryorder.com/"   # deploy ke baad yahan add kar dena
+]
 # Jazzmin Settings
 JAZZMIN_SETTINGS = {
     "site_title": "E-com Admin",
