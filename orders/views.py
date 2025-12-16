@@ -2,26 +2,23 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from .models import Order, OrderItem
 from .serializers import OrderSerializer, OrderCreateSerializer
 from cart.models import CartItem
-from products.models import Product, ProductVariant
 
 
 class OrderListView(generics.ListAPIView):
+    """List all orders for authenticated user"""
     serializer_class = OrderSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return Order.objects.filter(user=self.request.user).order_by('-created_at')
 
-    def list(self, request, *args, **kwargs):
-        queryset = self.filter_queryset(self.get_queryset())
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
 
 class OrderDetailView(generics.RetrieveAPIView):
+    """Retrieve specific order"""
     serializer_class = OrderSerializer
     permission_classes = [permissions.IsAuthenticated]
     lookup_field = 'id'
@@ -31,120 +28,145 @@ class OrderDetailView(generics.RetrieveAPIView):
 
 
 class OrderCreateView(APIView):
+    """Create new order from cart"""
     permission_classes = [permissions.IsAuthenticated]
 
     @transaction.atomic
     def post(self, request):
         serializer = OrderCreateSerializer(data=request.data)
 
-        if serializer.is_valid():
-            cart_items = CartItem.objects.filter(user=request.user)
-            if not cart_items.exists():
-                return Response(
-                    {'error': 'Cart is empty'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            try:
-                # Get data from request
-                total_amount = request.data.get('total_amount', 0)
-                shipping_fee = request.data.get('shipping_fee', 0)
+        # Get cart items
+        cart_items = CartItem.objects.filter(user=request.user)
+        if not cart_items.exists():
+            return Response(
+                {'error': 'Your cart is empty'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Calculate totals
+            subtotal = 0
+            for item in cart_items:
+                if item.variant:
+                    price = item.variant.discount_price if item.variant.discount_price else item.variant.price
+                else:
+                    price = item.product.base_price if item.product.base_price else 0
+                subtotal += price * item.quantity
+
+            # Calculate shipping (free for orders above 2000)
+            shipping_fee = 200 if subtotal < 2000 else 0
+            total_amount = subtotal + shipping_fee
+
+            # Create order
+            order = Order.objects.create(
+                user=request.user,
+                receiver_name=serializer.validated_data['receiver_name'],
+                phone=serializer.validated_data['phone'],
+                whatsapp=serializer.validated_data.get('whatsapp', ''),
+                payment_method=serializer.validated_data.get('payment_method', 'COD'),
+                country=serializer.validated_data.get('country', 'Pakistan'),
+                province=serializer.validated_data['province'],
+                city=serializer.validated_data['city'],
+                address1=serializer.validated_data['address1'],
+                address2=serializer.validated_data.get('address2', ''),
+                total_amount=total_amount,
+                shipping_fee=shipping_fee,
+                status='pending'
+            )
+
+            # Create order items
+            for cart_item in cart_items:
+                # Get price
+                if cart_item.variant:
+                    price = cart_item.variant.discount_price if cart_item.variant.discount_price else cart_item.variant.price
+                    variant_attrs = {
+                        'size': cart_item.variant.size,
+                        'color': cart_item.variant.color,
+                        'material': cart_item.variant.material,
+                        'sku': cart_item.variant.sku
+                    }
+                else:
+                    price = cart_item.product.base_price if cart_item.product.base_price else 0
+                    variant_attrs = None
                 
-                if not total_amount or total_amount <= 0:
-                    # Calculate total from cart items
-                    total_amount = sum(item.item_total for item in cart_items)
-                    shipping_fee = 200 if total_amount < 2000 else 0
-                    total_amount += shipping_fee
-
-                # Create order
-                order = Order.objects.create(
-                    user=request.user,
-                    receiver_name=serializer.validated_data['receiver_name'],
-                    phone=serializer.validated_data['phone'],
-                    whatsapp=serializer.validated_data.get('whatsapp', ''),
-                    payment_method=serializer.validated_data.get('payment_method', 'COD'),
-                    country=serializer.validated_data.get('country', 'Pakistan'),
-                    province=serializer.validated_data['province'],
-                    city=serializer.validated_data['city'],
-                    address1=serializer.validated_data['address1'],
-                    address2=serializer.validated_data.get('address2', ''),
-                    total_amount=total_amount,
-                    shipping_fee=shipping_fee,
-                    status='pending'
+                # Create order item
+                OrderItem.objects.create(
+                    order=order,
+                    product=cart_item.product,
+                    variant=cart_item.variant,
+                    quantity=cart_item.quantity,
+                    price=price,
+                    variant_attributes=variant_attrs
                 )
-
-                # Create order items from cart
-                for cart_item in cart_items:
-                    # Get price
-                    if cart_item.variant:
-                        price = cart_item.variant.discount_price if cart_item.variant.discount_price else cart_item.variant.price
-                        variant_attrs = {
-                            'size': cart_item.variant.size,
-                            'color': cart_item.variant.color,
-                            'material': cart_item.variant.material,
-                            'sku': cart_item.variant.sku
-                        }
-                    else:
-                        price = cart_item.product.base_price if cart_item.product.base_price else 0
-                        variant_attrs = None
-                    
-                    # Create order item
-                    OrderItem.objects.create(
-                        order=order,
-                        product=cart_item.product,
-                        variant=cart_item.variant,
-                        quantity=cart_item.quantity,
-                        price=price,
-                        variant_attributes=variant_attrs
-                    )
-                    
-                    # Update stock
-                    if cart_item.variant:
+                
+                # Update stock
+                if cart_item.variant:
+                    if cart_item.variant.stock >= cart_item.quantity:
                         cart_item.variant.stock -= cart_item.quantity
                         cart_item.variant.save()
                     else:
+                        raise Exception(f"Insufficient stock for {cart_item.variant.sku}")
+                else:
+                    if cart_item.product.stock >= cart_item.quantity:
                         cart_item.product.stock -= cart_item.quantity
                         cart_item.product.save()
+                    else:
+                        raise Exception(f"Insufficient stock for {cart_item.product.title}")
 
-                # Clear cart
-                cart_items.delete()
+            # Clear cart
+            cart_items.delete()
 
-                return Response(
-                    {
-                        'status': 'success',
-                        'order_id': order.id,
-                        'message': 'Order placed successfully',
-                        'order': OrderSerializer(order).data
-                    },
-                    status=status.HTTP_201_CREATED
-                )
+            return Response(
+                {
+                    'status': 'success',
+                    'message': 'Order placed successfully',
+                    'order_id': order.id,
+                    'total_amount': float(total_amount),
+                    'shipping_fee': float(shipping_fee),
+                    'order': OrderSerializer(order).data
+                },
+                status=status.HTTP_201_CREATED
+            )
 
-            except Exception as e:
-                print(f"Order creation error: {str(e)}")
-                return Response(
-                    {'error': f'Order creation failed: {str(e)}'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class OrderStatusUpdateView(APIView):
+    """Update order status (admin only)"""
     permission_classes = [permissions.IsAdminUser]
 
     def post(self, request, id):
         new_status = request.data.get('status')
+        
+        if not new_status:
+            return Response(
+                {'error': 'Status field is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        try:
-            order = Order.objects.get(id=id)
+        order = get_object_or_404(Order, id=id)
+        
+        # Validate status
+        valid_statuses = [choice[0] for choice in Order.STATUS_CHOICES]
+        if new_status not in valid_statuses:
+            return Response(
+                {'error': f'Invalid status. Must be one of: {", ".join(valid_statuses)}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-            if new_status not in dict(Order.STATUS_CHOICES):
-                return Response({'error': 'Invalid status'}, status=400)
+        order.status = new_status
+        order.save()
 
-            order.status = new_status
-            order.save()
-
-            return Response({'status': 'Order status updated'})
-
-        except Order.DoesNotExist:
-            return Response({'error': 'Order not found'}, status=404)
+        return Response({
+            'status': 'success',
+            'message': f'Order status updated to {new_status}',
+            'order_id': order.id,
+            'new_status': new_status
+        })

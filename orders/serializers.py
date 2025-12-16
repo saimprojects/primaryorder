@@ -2,14 +2,20 @@ from rest_framework import serializers
 from .models import Order, OrderItem
 from products.serializers import ProductSerializer, ProductVariantSerializer
 
+
 class OrderItemSerializer(serializers.ModelSerializer):
     product = ProductSerializer(read_only=True)
-    variant = ProductVariantSerializer(read_only=True)  # 🔥 NEW
-    variant_info = serializers.SerializerMethodField()  # 🔥 NEW
+    variant = ProductVariantSerializer(read_only=True)
+    variant_info = serializers.SerializerMethodField()
+    item_total = serializers.SerializerMethodField()
     
     class Meta:
         model = OrderItem
-        fields = ['id', 'product', 'variant', 'variant_info', 'quantity', 'price', 'item_total']
+        fields = [
+            'id', 'product', 'variant', 'variant_info', 
+            'quantity', 'price', 'item_total'
+        ]
+        read_only_fields = ['item_total']
     
     def get_variant_info(self, obj):
         if obj.variant_attributes:
@@ -24,12 +30,15 @@ class OrderItemSerializer(serializers.ModelSerializer):
                 info.append(f"SKU: {obj.variant_attributes['sku']}")
             return ', '.join(info)
         return None
+    
+    def get_item_total(self, obj):
+        return obj.item_total
 
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True, source='items.all')
-    subtotal = serializers.SerializerMethodField()  # 🔥 NEW
-    is_free_shipping = serializers.SerializerMethodField()  # 🔥 NEW
+    subtotal = serializers.SerializerMethodField()
+    is_free_shipping = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
@@ -39,9 +48,12 @@ class OrderSerializer(serializers.ModelSerializer):
             'address1', 'address2',
             'total_amount', 'shipping_fee', 'subtotal', 'is_free_shipping',
             'payment_method', 'status',
-            'created_at', 'items'
+            'created_at', 'updated_at', 'items'
         ]
-        read_only_fields = ['id', 'user', 'created_at', 'status']
+        read_only_fields = [
+            'id', 'user', 'total_amount', 'shipping_fee',
+            'created_at', 'updated_at', 'status'
+        ]
     
     def get_subtotal(self, obj):
         return obj.subtotal
@@ -51,10 +63,6 @@ class OrderSerializer(serializers.ModelSerializer):
 
 
 class OrderCreateSerializer(serializers.ModelSerializer):
-    cart_items = serializers.JSONField(required=False)  # 🔥 NEW
-    total_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)  # 🔥 NEW
-    shipping_fee = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)  # 🔥 NEW
-    
     class Meta:
         model = Order
         fields = [
@@ -66,8 +74,23 @@ class OrderCreateSerializer(serializers.ModelSerializer):
             'province',
             'city',
             'address1',
-            'address2',
-            'cart_items',  # 🔥 NEW
-            'total_amount',  # 🔥 NEW
-            'shipping_fee'  # 🔥 NEW
+            'address2'
         ]
+    
+    def validate(self, data):
+        # Custom validation
+        required_fields = ['receiver_name', 'phone', 'province', 'city', 'address1']
+        for field in required_fields:
+            if field not in data or not data[field]:
+                raise serializers.ValidationError(
+                    {field: "This field is required."}
+                )
+        
+        # Phone validation
+        phone = data.get('phone', '')
+        if not phone.isdigit() or len(phone) < 10:
+            raise serializers.ValidationError(
+                {'phone': 'Please enter a valid phone number.'}
+            )
+        
+        return data
